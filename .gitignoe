@@ -1,0 +1,11 @@
+__pycache__/ 
+.idea/
+.vscode/
+.vs/
+.venv/
+venv/
+.agent/
+.claude/
+.codex/
+.gemini/
+

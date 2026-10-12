@@ -37,17 +37,19 @@ ReadRegistry20(<msf>\Registry20, 文件 + DPAPI)       ← 第 1 优先
   取硬盘序列号(ASCII)
 * **strACPUBrand** — `cpuid 0x80000002..0x80000004`, 48 字节品牌串
   (如 `Intel(R) Core(TM) i7-9750H CPU @ 2.60GHz`)
-* **strAMinMac** — 优先读 `<msf>\machine-info` 的内容（存 MAC 字符串，**明文**）;
+* **strAMinMac** — 优先读 `<msf>\machine-info`（`[BE u32 长度][ROT13(MAC)]`，
+  落盘时字符串经过 ROT13 混淆，读出来要先还原）;
   为空则用 `GetAdaptersInfo` 枚举网卡, 取**字符串最小**的那个 MAC
 
 ## 混淆方式 (不是加密)
 
-三个混淆层次, 从外到内:
+四个混淆层次, 从外到内:
 
 1. **DPAPI** — 二进制落盘时 `CryptProtectData` / `CryptUnprotectData`,
    绑定当前 Windows 用户 + 机器, 换机器就解不开
 2. **值混淆** — `b = ~(k ^ b)`, `k = (len & 0xFF) ^ ((len >> 8) & 0xFF)`
 3. **字符串常量混淆** — `b ^= (i - 10) & 0xFF`
+4. **ROT13** — `machine-info` 里的 MAC 字符串按字母 ROT13 落盘（非字母不变）
 
 反混淆后能直接看到明文 SQL, 例如:
 

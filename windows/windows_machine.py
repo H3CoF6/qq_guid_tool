@@ -187,9 +187,9 @@ def get_harddisk_id(drive_index: int = 0):
                     h, 0x2D1400, inp, 12, out, 1024, ctypes.byref(returned), None):
                 return None
             raw = out.raw
-            off = 4
-            while off < len(raw) and raw[off:off + 1] == b" ":
-                off += 1
+            off = struct.unpack_from("<I", raw, 16)[0]
+            if not 0 <= off < len(raw):
+                return None
             return raw[off:off + 40].split(b"\x00")[0].decode("ascii", "ignore")
         finally:
             ctypes.windll.kernel32.CloseHandle(h)
@@ -237,17 +237,22 @@ def get_adapters_mac() -> list[str]:
     buf = ctypes.create_string_buffer(size.value)
     if iphlpapi.GetAdaptersInfo(buf, ctypes.byref(size)) != 0:
         return []
-    OFF_ADDR_LEN = 8 + 4 + 260 + 132     # Next/ComboIndex/AdapterName/Description
+    ptr = ctypes.sizeof(ctypes.c_void_p)
+    OFF_ADDR_LEN = ptr + 4 + 260 + 132   # Next/ComboIndex/AdapterName/Description
     OFF_ADDR = OFF_ADDR_LEN + 4
+    base = ctypes.addressof(buf)
     macs, off, raw = [], 0, buf.raw
     while True:
-        nxt = struct.unpack_from("<Q", raw, off)[0]
+        # IP_ADAPTER_INFO.Next 是绝对虚拟地址, 要换算回 buffer 内偏移
+        nxt = struct.unpack_from("<Q" if ptr == 8 else "<I", raw, off)[0]
         alen = struct.unpack_from("<I", raw, off + OFF_ADDR_LEN)[0]
         if 0 < alen <= 8:
             macs.append(format_mac(raw[off + OFF_ADDR:off + OFF_ADDR + alen]))
         if nxt == 0:
             break
-        off = nxt
+        off = nxt - base
+        if not 0 <= off < len(raw):
+            break
     return macs
 
 
@@ -261,20 +266,40 @@ def get_min_mac() -> str | None:
 # machine-info
 # ==========================================================================
 
+def rot13(s: str) -> str:
+    """wrapper string obfuscation: ROT13 over ASCII letters only."""
+    out = []
+    for ch in s:
+        o = ord(ch)
+        if 65 <= o <= 90:
+            out.append(chr((o - 65 + 13) % 26 + 65))
+        elif 97 <= o <= 122:
+            out.append(chr((o - 97 + 13) % 26 + 97))
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
 def read_machine_info(path: str):
     """machine-info 内容 (明文 + 可能的 DPAPI 包一层)。"""
     if not os.path.exists(path):
         return None
     raw = open(path, "rb").read()
-    if raw.lstrip()[:44].startswith(b"01 00 00 00") or raw[:4] == b"\x01\x00\x00\x00":
+    if raw[:4] == b"\x01\x00\x00\x00":
         dec = dpapi_unprotect(raw)
         if dec:
             return dec
+    # [BE u32 len][ROT13(mac string)]
+    if len(raw) >= 4:
+        n = struct.unpack_from(">I", raw, 0)[0]
+        body = raw[4:4 + n] if 0 < n <= len(raw) - 4 else raw[4:]
+        return rot13(body.decode("latin1", "replace")).encode("latin1")
     return raw
 
 
 def write_machine_info(path: str, mac_str: str):
-    blob = dpapi_protect(mac_str.encode("utf-8")) or mac_str.encode("utf-8")
+    body = rot13(mac_str).encode("latin1")
+    blob = struct.pack(">I", len(body)) + body
     os.makedirs(os.path.dirname(path), exist_ok=True)
     open(path, "wb").write(blob)
     return blob
